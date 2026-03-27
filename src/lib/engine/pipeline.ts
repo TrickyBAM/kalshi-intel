@@ -45,25 +45,30 @@ export async function runPipeline(): Promise<PipelineResult> {
   };
 
   try {
-    // ── Step 1: Fetch watchlist markets directly by series + broad scan in parallel ──
-    console.log('[Pipeline] Fetching watchlist + broad scan markets...');
-    const [allMarkets, ...watchlistBatches] = await Promise.all([
-      getAllActiveMarkets(),
-      ...WATCHLIST.map(entry =>
-        getMarketsBySeries(entry.series_ticker).catch((e: unknown) => {
-          result.errors.push(`Watchlist fetch error (${entry.series_ticker}): ${e}`);
-          return [] as KalshiMarket[];
-        })
-      ),
-    ]);
-
+    // ── Step 1: Fetch broad scan markets + watchlist series (staggered) ──────
+    console.log('[Pipeline] Fetching broad scan markets...');
+    const allMarkets = await getAllActiveMarkets();
     result.markets_scanned = allMarkets.length;
 
-    // Deduplicate watchlist markets (a ticker could appear in multiple series fetches)
+    // Fetch watchlist markets by series in small concurrent batches to avoid 429s
+    console.log('[Pipeline] Fetching watchlist markets by series...');
     const watchlistMap = new Map<string, KalshiMarket>();
-    for (const batch of watchlistBatches) {
-      for (const m of batch) {
-        watchlistMap.set(m.ticker, m);
+    const BATCH_SIZE = 3;
+    for (let i = 0; i < WATCHLIST.length; i += BATCH_SIZE) {
+      const batch = WATCHLIST.slice(i, i + BATCH_SIZE);
+      const results = await Promise.allSettled(
+        batch.map(entry => getMarketsBySeries(entry.series_ticker))
+      );
+      for (let j = 0; j < results.length; j++) {
+        const r = results[j];
+        if (r.status === 'fulfilled') {
+          for (const m of r.value) watchlistMap.set(m.ticker, m);
+        } else {
+          result.errors.push(`Watchlist fetch error (${batch[j].series_ticker}): ${r.reason}`);
+        }
+      }
+      if (i + BATCH_SIZE < WATCHLIST.length) {
+        await new Promise(res => setTimeout(res, 200));
       }
     }
     const watchlistMarkets = Array.from(watchlistMap.values());
