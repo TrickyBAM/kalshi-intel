@@ -80,14 +80,16 @@ export async function runPipeline(): Promise<PipelineResult> {
       result.snapshots_stored = snapshots.length;
     }
 
-    // ── Step 4: Calculate velocity for watchlist markets ──────────────────
+    // ── Step 4: Calculate velocity for watchlist markets (parallelized) ─────
     const velocities = new Map<string, VelocityResult>();
+    const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
 
-    for (const market of watchlistMarkets) {
+    await Promise.allSettled(watchlistMarkets.map(async market => {
       try {
-        const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-        const recentSnaps = await getRecentSnapshots(market.ticker, since24h);
-        const volStats = await getVolumeStats(market.ticker);
+        const [recentSnaps, volStats] = await Promise.all([
+          getRecentSnapshots(market.ticker, since24h),
+          getVolumeStats(market.ticker),
+        ]);
         const zScore = calculateVolumeZScore(market.volume_24h, volStats.avg, volStats.stddev);
         const currentPrice = market.last_price / 100;
         const vel = calculateVelocity(market.ticker, currentPrice, recentSnaps, zScore);
@@ -96,7 +98,7 @@ export async function runPipeline(): Promise<PipelineResult> {
       } catch (err) {
         result.errors.push(`Velocity error for ${market.ticker}: ${err}`);
       }
-    }
+    }));
 
     // ── Step 5: Detect correlation clusters ───────────────────────────────
     const clusters = detectClusters(velocities);

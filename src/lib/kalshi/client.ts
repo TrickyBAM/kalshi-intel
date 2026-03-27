@@ -34,10 +34,12 @@ async function fetchKalshi<T>(path: string, params?: Record<string, string>): Pr
   return res.json();
 }
 
-// Fetch ALL active markets with full pagination
-export async function getAllActiveMarkets(): Promise<KalshiMarket[]> {
+// Fetch active markets with full pagination
+// maxPages=1 for fast mode (Vercel Hobby 10s limit), use higher for dedicated workers
+export async function getAllActiveMarkets(maxPages = 5): Promise<KalshiMarket[]> {
   const allMarkets: KalshiMarket[] = [];
   let cursor: string | undefined;
+  let pages = 0;
 
   do {
     const params: Record<string, string> = {
@@ -53,9 +55,10 @@ export async function getAllActiveMarkets(): Promise<KalshiMarket[]> {
     }
 
     cursor = data.cursor;
+    pages++;
 
-    // Safety: stop if no cursor (no more pages) or we've collected enough
-    if (!cursor || data.markets.length === 0) break;
+    // Safety: stop if no cursor, no markets, or page limit reached
+    if (!cursor || data.markets.length === 0 || pages >= maxPages) break;
 
     // Rate limit courtesy — 50ms between pages
     await new Promise(r => setTimeout(r, 50));
