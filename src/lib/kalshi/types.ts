@@ -3,20 +3,21 @@
 export interface KalshiMarket {
   ticker: string;
   event_ticker: string;
-  series_ticker: string;
+  // NOTE: series_ticker is NOT in the markets API response.
+  // Derive it from event_ticker: event_ticker.split('-')[0]
   title: string;
   subtitle?: string;
-  status: 'open' | 'closed' | 'settled';
-  yes_bid: number;    // in cents (0-100)
-  yes_ask: number;
-  no_bid: number;
-  no_ask: number;
-  last_price: number;
-  volume: number;
-  volume_24h: number;
-  open_interest: number;
-  notional_value: number;
-  category: string;
+  status: 'active' | 'closed' | 'settled';
+  yes_bid_dollars: string;    // decimal string, 0.0000–1.0000
+  yes_ask_dollars: string;
+  no_bid_dollars: string;
+  no_ask_dollars: string;
+  last_price_dollars: string;
+  volume_fp: string;           // total volume (string)
+  volume_24h_fp: string;       // 24h volume (string)
+  open_interest_fp: string;    // open interest (string)
+  notional_value_dollars: string;
+  category?: string;
   close_time: string;
   expiration_time?: string;
   can_close_early?: boolean;

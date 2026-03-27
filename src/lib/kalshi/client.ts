@@ -130,18 +130,31 @@ export async function getEvents(seriesTicker?: string): Promise<KalshiEventsResp
   return fetchKalshi<KalshiEventsResponse>('/events', params);
 }
 
-// Convert Kalshi price from cents (0-100) to decimal (0-1)
-export function centsToDecimal(cents: number): number {
-  return cents / 100;
+// Parse a Kalshi price string to a number (prices are already 0.0–1.0 scale)
+export function parsePrice(s: string | undefined): number {
+  return parseFloat(s || '0') || 0;
 }
 
-// Normalize a market's prices to decimal
+// Parse a Kalshi volume/fp string to a number
+export function parseFp(s: string | undefined): number {
+  return parseFloat(s || '0') || 0;
+}
+
+// Derive the series ticker from an event_ticker (e.g. "KXFEDDECISION-26MAY07" → "KXFEDDECISION")
+export function seriesFromEvent(eventTicker: string): string {
+  return eventTicker.split('-')[0];
+}
+
+// Normalize a market's prices to numbers
 export function normalizeMarket(m: KalshiMarket) {
   return {
     ...m,
-    yes_bid_decimal: centsToDecimal(m.yes_bid),
-    yes_ask_decimal: centsToDecimal(m.yes_ask),
-    last_price_decimal: centsToDecimal(m.last_price),
-    spread_decimal: centsToDecimal(m.yes_ask - m.yes_bid),
+    yes_bid_num: parsePrice(m.yes_bid_dollars),
+    yes_ask_num: parsePrice(m.yes_ask_dollars),
+    last_price_num: parsePrice(m.last_price_dollars),
+    spread_num: parsePrice(m.yes_ask_dollars) - parsePrice(m.yes_bid_dollars),
+    volume_24h_num: parseFp(m.volume_24h_fp),
+    open_interest_num: parseFp(m.open_interest_fp),
+    series_ticker: seriesFromEvent(m.event_ticker),
   };
 }

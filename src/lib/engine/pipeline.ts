@@ -1,7 +1,7 @@
 // Main polling pipeline orchestrator
 // Flow: Poll Kalshi → Store Watchlist Snapshots → Calculate Velocity → Check Clusters → Score → Alert
 
-import { getAllActiveMarkets } from '../kalshi/client';
+import { getAllActiveMarkets, parsePrice, parseFp, seriesFromEvent } from '../kalshi/client';
 import type { KalshiMarket, MarketSnapshot, VelocityResult } from '../kalshi/types';
 import { WATCHLIST, WATCHLIST_SERIES_SET } from '../config/watchlist';
 import { THRESHOLDS } from '../config/thresholds';
@@ -53,27 +53,33 @@ export async function runPipeline(): Promise<PipelineResult> {
 
     // ── Step 2: Separate watchlist vs broad scan ───────────────────────────
     const watchlistMarkets = allMarkets.filter(m =>
-      WATCHLIST_SERIES_SET.has(m.series_ticker)
+      WATCHLIST_SERIES_SET.has(seriesFromEvent(m.event_ticker))
     );
     const broadMarkets = allMarkets; // Use all for broad scan
     result.watchlist_markets = watchlistMarkets.length;
 
     // ── Step 3: Store snapshots for watchlist markets ──────────────────────
     const now = new Date().toISOString();
-    const snapshots: MarketSnapshot[] = watchlistMarkets.map(m => ({
-      market_ticker: m.ticker,
-      series_ticker: m.series_ticker,
-      category: getCategoryForSeries(m.series_ticker),
-      title: m.title,
-      timestamp: now,
-      yes_price: m.last_price / 100,
-      yes_bid: m.yes_bid / 100,
-      yes_ask: m.yes_ask / 100,
-      spread: (m.yes_ask - m.yes_bid) / 100,
-      volume_24h: m.volume_24h,
-      open_interest: m.open_interest,
-      last_trade_price: m.last_price / 100,
-    }));
+    const snapshots: MarketSnapshot[] = watchlistMarkets.map(m => {
+      const series = seriesFromEvent(m.event_ticker);
+      const lastPrice = parsePrice(m.last_price_dollars);
+      const bid = parsePrice(m.yes_bid_dollars);
+      const ask = parsePrice(m.yes_ask_dollars);
+      return {
+        market_ticker: m.ticker,
+        series_ticker: series,
+        category: getCategoryForSeries(series),
+        title: m.title,
+        timestamp: now,
+        yes_price: lastPrice,
+        yes_bid: bid,
+        yes_ask: ask,
+        spread: ask - bid,
+        volume_24h: parseFp(m.volume_24h_fp),
+        open_interest: parseFp(m.open_interest_fp),
+        last_trade_price: lastPrice,
+      };
+    });
 
     if (snapshots.length > 0) {
       await storeSnapshots(snapshots);
@@ -90,10 +96,11 @@ export async function runPipeline(): Promise<PipelineResult> {
           getRecentSnapshots(market.ticker, since24h),
           getVolumeStats(market.ticker),
         ]);
-        const zScore = calculateVolumeZScore(market.volume_24h, volStats.avg, volStats.stddev);
-        const currentPrice = market.last_price / 100;
+        const vol24h = parseFp(market.volume_24h_fp);
+        const zScore = calculateVolumeZScore(vol24h, volStats.avg, volStats.stddev);
+        const currentPrice = parsePrice(market.last_price_dollars);
         const vel = calculateVelocity(market.ticker, currentPrice, recentSnaps, zScore);
-        velocities.set(market.series_ticker, vel);
+        velocities.set(seriesFromEvent(market.event_ticker), vel);
         velocities.set(market.ticker, vel);
       } catch (err) {
         result.errors.push(`Velocity error for ${market.ticker}: ${err}`);
@@ -138,15 +145,16 @@ export async function runPipeline(): Promise<PipelineResult> {
       if (!vel) continue;
 
       // Find relevant cluster
+      const marketSeries = seriesFromEvent(market.event_ticker);
       const relevantCluster = clusters.find(c =>
-        c.cluster_key === getClusterForSeries(market.series_ticker)
+        c.cluster_key === getClusterForSeries(marketSeries)
       );
 
-      const score = scoreConfidence(vel, relevantCluster, market.volume_24h);
+      const score = scoreConfidence(vel, relevantCluster, parseFp(market.volume_24h_fp));
       if (!score.alert_level || score.alert_level === 'info') continue;
 
       // Volume floor check
-      if (market.volume_24h < THRESHOLDS.VOLUME_FLOOR_24H) continue;
+      if (parseFp(market.volume_24h_fp) < THRESHOLDS.VOLUME_FLOOR_24H) continue;
 
       // Daily caps
       if (score.alert_level === 'flash' && flashCount >= THRESHOLDS.MAX_FLASH_ALERTS_PER_DAY) continue;

@@ -1,9 +1,10 @@
 // Broad platform scan — checks ALL active Kalshi markets for anomalies
 // Funnel: all markets → velocity/volume filter → confidence score → alert
 
-import type { KalshiMarket, AnomalyResult, MarketSnapshot } from '../kalshi/types';
+import type { KalshiMarket, AnomalyResult } from '../kalshi/types';
 import { THRESHOLDS } from '../config/thresholds';
 import { WATCHLIST_SERIES_SET } from '../config/watchlist';
+import { parsePrice, parseFp, seriesFromEvent } from '../kalshi/client';
 import { calculateVolumeZScore } from './volume';
 
 interface BroadScanContext {
@@ -20,14 +21,15 @@ export function detectAnomalies(
   const now = Date.now();
 
   for (const market of markets) {
-    const isWatchlist = WATCHLIST_SERIES_SET.has(market.series_ticker);
+    const series = seriesFromEvent(market.event_ticker);
+    const isWatchlist = WATCHLIST_SERIES_SET.has(series);
 
     // Skip settled/closed markets
-    if (market.status !== 'open') continue;
+    if (market.status !== 'active') continue;
 
     const prev = context.prevSnapshots.get(market.ticker);
-    const currentPrice = market.last_price / 100; // convert cents to decimal
-    const currentVol = market.volume_24h;
+    const currentPrice = parsePrice(market.last_price_dollars);
+    const currentVol = parseFp(market.volume_24h_fp);
 
     // Velocity (approximate — compare to last snapshot)
     let velocity5min = 0;
@@ -62,7 +64,7 @@ export function detectAnomalies(
 
     anomalies.push({
       market_ticker: market.ticker,
-      series_ticker: market.series_ticker,
+      series_ticker: series,
       title: market.title,
       category: market.category || 'other',
       current_price: currentPrice,
@@ -88,8 +90,8 @@ export function updateScanContext(
   const now = Date.now();
   for (const m of markets) {
     context.prevSnapshots.set(m.ticker, {
-      price: m.last_price / 100,
-      volume: m.volume_24h,
+      price: parsePrice(m.last_price_dollars),
+      volume: parseFp(m.volume_24h_fp),
       ts: now,
     });
   }
@@ -102,7 +104,7 @@ export function buildVolumeStats(
 ): Map<string, { avg: number; stddev: number }> {
   const stats = new Map(existing);
   for (const m of markets) {
-    const vol = m.volume_24h;
+    const vol = parseFp(m.volume_24h_fp);
     if (!stats.has(m.ticker)) {
       // Bootstrap: assume ±30% stddev
       stats.set(m.ticker, { avg: vol, stddev: vol * 0.3 || 1 });
