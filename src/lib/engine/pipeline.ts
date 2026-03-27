@@ -1,7 +1,7 @@
 // Main polling pipeline orchestrator
 // Flow: Poll Kalshi → Store Watchlist Snapshots → Calculate Velocity → Check Clusters → Score → Alert
 
-import { getAllActiveMarkets, parsePrice, parseFp, seriesFromEvent } from '../kalshi/client';
+import { getAllActiveMarkets, getMarketsBySeries, parsePrice, parseFp, seriesFromEvent } from '../kalshi/client';
 import type { KalshiMarket, MarketSnapshot, VelocityResult } from '../kalshi/types';
 import { WATCHLIST, WATCHLIST_SERIES_SET } from '../config/watchlist';
 import { THRESHOLDS } from '../config/thresholds';
@@ -45,18 +45,31 @@ export async function runPipeline(): Promise<PipelineResult> {
   };
 
   try {
-    // ── Step 1: Fetch ALL active markets ───────────────────────────────────
-    console.log('[Pipeline] Fetching all active markets...');
-    const allMarkets = await getAllActiveMarkets();
-    result.markets_scanned = allMarkets.length;
-    console.log(`[Pipeline] Fetched ${allMarkets.length} markets`);
+    // ── Step 1: Fetch watchlist markets directly by series + broad scan in parallel ──
+    console.log('[Pipeline] Fetching watchlist + broad scan markets...');
+    const [allMarkets, ...watchlistBatches] = await Promise.all([
+      getAllActiveMarkets(),
+      ...WATCHLIST.map(entry =>
+        getMarketsBySeries(entry.series_ticker).catch((e: unknown) => {
+          result.errors.push(`Watchlist fetch error (${entry.series_ticker}): ${e}`);
+          return [] as KalshiMarket[];
+        })
+      ),
+    ]);
 
-    // ── Step 2: Separate watchlist vs broad scan ───────────────────────────
-    const watchlistMarkets = allMarkets.filter(m =>
-      WATCHLIST_SERIES_SET.has(seriesFromEvent(m.event_ticker))
-    );
+    result.markets_scanned = allMarkets.length;
+
+    // Deduplicate watchlist markets (a ticker could appear in multiple series fetches)
+    const watchlistMap = new Map<string, KalshiMarket>();
+    for (const batch of watchlistBatches) {
+      for (const m of batch) {
+        watchlistMap.set(m.ticker, m);
+      }
+    }
+    const watchlistMarkets = Array.from(watchlistMap.values());
     const broadMarkets = allMarkets; // Use all for broad scan
     result.watchlist_markets = watchlistMarkets.length;
+    console.log(`[Pipeline] Broad: ${allMarkets.length} markets, Watchlist: ${watchlistMarkets.length} markets`);
 
     // ── Step 3: Store snapshots for watchlist markets ──────────────────────
     const now = new Date().toISOString();
