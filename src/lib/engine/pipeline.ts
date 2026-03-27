@@ -53,23 +53,14 @@ export async function runPipeline(): Promise<PipelineResult> {
     // Fetch watchlist markets by series in small concurrent batches to avoid 429s
     console.log('[Pipeline] Fetching watchlist markets by series...');
     const watchlistMap = new Map<string, KalshiMarket>();
-    const BATCH_SIZE = 3;
-    for (let i = 0; i < WATCHLIST.length; i += BATCH_SIZE) {
-      const batch = WATCHLIST.slice(i, i + BATCH_SIZE);
-      const results = await Promise.allSettled(
-        batch.map(entry => getMarketsBySeries(entry.series_ticker))
-      );
-      for (let j = 0; j < results.length; j++) {
-        const r = results[j];
-        if (r.status === 'fulfilled') {
-          for (const m of r.value) watchlistMap.set(m.ticker, m);
-        } else {
-          result.errors.push(`Watchlist fetch error (${batch[j].series_ticker}): ${r.reason}`);
-        }
+    for (const entry of WATCHLIST) {
+      try {
+        const markets = await getMarketsBySeries(entry.series_ticker);
+        for (const m of markets) watchlistMap.set(m.ticker, m);
+      } catch (e) {
+        result.errors.push(`Watchlist fetch error (${entry.series_ticker}): ${e}`);
       }
-      if (i + BATCH_SIZE < WATCHLIST.length) {
-        await new Promise(res => setTimeout(res, 200));
-      }
+      await new Promise(res => setTimeout(res, 150));
     }
     const watchlistMarkets = Array.from(watchlistMap.values());
     const broadMarkets = allMarkets; // Use all for broad scan
